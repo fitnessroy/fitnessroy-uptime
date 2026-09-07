@@ -1,0 +1,100 @@
+# Probes the blog from outside the house. See README.md for why this cannot
+# live in the cluster with everything else.
+name: Probe fitnessroy.com
+
+on:
+  schedule:
+    # Every five minutes. Free here because the repository is public; GitHub
+    # treats this as an upper bound and runs late under load.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+# Only what it needs: open and close its own issues. No contents write, no
+# packages, nothing that could touch another repository.
+permissions:
+  issues: write
+
+# A late run must never overlap a current one and double-report.
+concurrency:
+  group: probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sample the front page
+        id: probe
+        run: |
+          fail=0
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://fitnessroy.com/ || echo 000)
+            printf 'sample %s: %s\n' "$i" "$code"
+            [ "$code" = "200" ] || fail=$((fail + 1))
+            [ "$i" = 6 ] || sleep 3
+          done
+          echo "Failed $fail of 6."
+          echo "fail=$fail" >> "$GITHUB_OUTPUT"
+          # Half, matching the tunnel watchdog's threshold. The fault this is
+          # here for is usually partial, so requiring all six would miss it.
+          if [ "$fail" -ge 3 ]; then
+            echo "state=down" >> "$GITHUB_OUTPUT"
+          else
+            echo "state=up" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report a change of state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          STATE: ${{ steps.probe.outputs.state }}
+          FAILED: ${{ steps.probe.outputs.fail }}
+          RT_KEY: ${{ secrets.ROYTOOLS_API_KEY }}
+        run: |
+          set -u
+
+          # Pushes to RoyTools, which reaches Telegram and web push. Optional on
+          # purpose: with no key the issue still gets opened, so the outage is
+          # still reported - just through GitHub rather than a phone push.
+          notify() {
+            if [ -z "${RT_KEY:-}" ]; then
+              echo "note: ROYTOOLS_API_KEY is not set - skipping the phone push."
+              return 0
+            fi
+            curl -s -o /dev/null -w "  notify.php -> %{http_code}\n" --max-time 15 -X POST \
+              -H "Authorization: Bearer $RT_KEY" \
+              -H 'Content-Type: application/json' \
+              -d "{\"title\":\"$1\",\"body\":\"$2\",\"url\":\"https://fitnessroy.com/\"}" \
+              https://brisin.no/roytools/api/notify.php || true
+          }
+
+          # The label carries the state, so make sure it exists before relying
+          # on it. Already-exists is not an error worth failing a probe over.
+          gh label create outage --color B60205 --description "fitnessroy.com svarer ikke" 2>/dev/null || true
+
+          open=$(gh issue list --label outage --state open --limit 1 --json number --jq '.[0].number // empty')
+
+          if [ "$STATE" = "down" ] && [ -z "$open" ]; then
+            echo "Down, and nothing open yet - reporting."
+            gh issue create --label outage \
+              --title "fitnessroy.com svarer ikke" \
+              --body "$FAILED av 6 forespørsler feilet, målt fra GitHub - altså utenfor huset.
+
+          Siden dette er målt utenfra, sier det ingenting i seg selv om hva som er galt. To muligheter:
+
+          - **Tunnelen holder døde ruter.** Vaktbikkja i klyngen fikser dette selv, vanligvis innen ti minutter.
+          - **Huset er offline.** Da er dette det eneste varselet som kommer fram, fordi Alertmanager og Uptime Kuma begge går ut gjennom den samme linja.
+
+          Denne saken lukkes automatisk når siden svarer igjen."
+            notify "fitnessroy.com svarer ikke" "$FAILED av 6 forespørsler feilet, målt utenfra huset."
+
+          elif [ "$STATE" = "up" ] && [ -n "$open" ]; then
+            echo "Back up - closing #$open."
+            gh issue close "$open" --comment "Svarer igjen: 6 av 6 forespørsler ga 200."
+            notify "fitnessroy.com er oppe igjen" "6 av 6 forespørsler ga 200."
+
+          elif [ "$STATE" = "down" ]; then
+            echo "Still down, already reported in #$open - staying quiet."
+          else
+            echo "Healthy, nothing open. Nothing to do."
+          fi
