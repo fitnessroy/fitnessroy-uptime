@@ -50,6 +50,23 @@ nothing to commit and nothing to get out of sync:
 That means one message when it breaks and one when it comes back, however long
 it lasts in between. The issue history doubles as an outage log.
 
+## Rehearsing it
+
+An alarm nobody has watched fire is not known to work. Run the workflow by hand
+with **`simulate_failure`** ticked and it forces a down reading: the issue opens
+and the notification goes out, through the real code path rather than a mock.
+Run it again without the tick and, since the site is up, it closes the issue and
+sends the recovery notification.
+
+Both are marked **`[ØVELSE]`** so a drill can never be mistaken for a real
+outage later. An unmarked "site was down" entry that never happened would poison
+the very history this repo exists to keep.
+
+```sh
+gh workflow run probe.yml --repo fitnessroy/fitnessroy-uptime -f simulate_failure=true
+gh workflow run probe.yml --repo fitnessroy/fitnessroy-uptime
+```
+
 ## Known limits
 
 - **GitHub's scheduler is best-effort.** `*/5` is an upper bound, not a

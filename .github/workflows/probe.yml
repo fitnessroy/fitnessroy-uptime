@@ -8,6 +8,15 @@ on:
     # treats this as an upper bound and runs late under load.
     - cron: "*/5 * * * *"
   workflow_dispatch:
+    inputs:
+      simulate_failure:
+        # Same idea as backup-watchdog.yaml in k3s-apps: an alarm nobody has
+        # ever seen fire is not known to work. This forces a down reading so
+        # the whole path - issue, notification, recovery - can be rehearsed
+        # without waiting for a real outage.
+        description: "Drill: force a 'down' reading to prove the alarm works. Opens a real issue and sends a real notification, both marked ØVELSE."
+        type: boolean
+        default: false
 
 # Only what it needs: open and close its own issues. No contents write, no
 # packages, nothing that could touch another repository.
@@ -25,7 +34,20 @@ jobs:
     steps:
       - name: Sample the front page
         id: probe
+        env:
+          SIMULATE: ${{ inputs.simulate_failure }}
         run: |
+          # A drill skips the measurement entirely rather than faking a site to
+          # probe. Everything downstream is the real code path.
+          if [ "${SIMULATE:-false}" = "true" ]; then
+            echo "DRILL - forcing a down reading. The site is not being judged here."
+            echo "fail=6"     >> "$GITHUB_OUTPUT"
+            echo "state=down" >> "$GITHUB_OUTPUT"
+            echo "drill=yes"  >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "drill=no" >> "$GITHUB_OUTPUT"
+
           fail=0
           for i in 1 2 3 4 5 6; do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://fitnessroy.com/ || echo 000)
@@ -49,6 +71,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           STATE: ${{ steps.probe.outputs.state }}
           FAILED: ${{ steps.probe.outputs.fail }}
+          DRILL: ${{ steps.probe.outputs.drill }}
           RT_KEY: ${{ secrets.ROYTOOLS_API_KEY }}
         run: |
           set -u
@@ -68,6 +91,12 @@ jobs:
               https://brisin.no/roytools/api/notify.php || true
           }
 
+          # A drill must be unmistakable in the outage log afterwards. An
+          # unmarked "site was down" entry that never happened is worse than no
+          # entry at all - it would poison the history this repo exists to keep.
+          TAG=""
+          if [ "${DRILL:-no}" = "yes" ]; then TAG="[ØVELSE] "; fi
+
           # The label carries the state, so make sure it exists before relying
           # on it. Already-exists is not an error worth failing a probe over.
           gh label create outage --color B60205 --description "fitnessroy.com svarer ikke" 2>/dev/null || true
@@ -77,7 +106,7 @@ jobs:
           if [ "$STATE" = "down" ] && [ -z "$open" ]; then
             echo "Down, and nothing open yet - reporting."
             gh issue create --label outage \
-              --title "fitnessroy.com svarer ikke" \
+              --title "${TAG}fitnessroy.com svarer ikke" \
               --body "$FAILED av 6 forespørsler feilet, målt fra GitHub - altså utenfor huset.
 
           Siden dette er målt utenfra, sier det ingenting i seg selv om hva som er galt. To muligheter:
@@ -86,12 +115,12 @@ jobs:
           - **Huset er offline.** Da er dette det eneste varselet som kommer fram, fordi Alertmanager og Uptime Kuma begge går ut gjennom den samme linja.
 
           Denne saken lukkes automatisk når siden svarer igjen."
-            notify "fitnessroy.com svarer ikke" "$FAILED av 6 forespørsler feilet, målt utenfra huset."
+            notify "${TAG}fitnessroy.com svarer ikke" "$FAILED av 6 forespørsler feilet, målt utenfra huset."
 
           elif [ "$STATE" = "up" ] && [ -n "$open" ]; then
             echo "Back up - closing #$open."
             gh issue close "$open" --comment "Svarer igjen: 6 av 6 forespørsler ga 200."
-            notify "fitnessroy.com er oppe igjen" "6 av 6 forespørsler ga 200."
+            notify "${TAG}fitnessroy.com er oppe igjen" "6 av 6 forespørsler ga 200."
 
           elif [ "$STATE" = "down" ]; then
             echo "Still down, already reported in #$open - staying quiet."
