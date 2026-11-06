@@ -1,0 +1,31 @@
+# Keeps probe.yml from being switched off. GitHub disables scheduled workflows
+# after 60 days without repository activity, and this repo is meant to sit
+# still for months - it went quiet once and the probe was disabled on
+# 2026-11-06. Re-enabling an already-enabled workflow through the API is
+# harmless and restarts that clock, so doing it monthly keeps it well clear
+# of 60 days without anyone having to push a commit to look busy.
+name: Keep the probe alive
+
+on:
+  schedule:
+    # 1st of the month, off the hour to dodge the scheduler's busiest minutes.
+    - cron: "17 6 1 * *"
+  workflow_dispatch:
+
+# Only what it needs: enable workflows in this repository. Kept apart from
+# probe.yml so the probe itself never holds actions: write.
+permissions:
+  actions: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-enable the probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh api -X PUT "repos/$GH_REPO/actions/workflows/probe.yml/enable"
+          gh api -X PUT "repos/$GH_REPO/actions/workflows/keepalive.yml/enable"
+          gh workflow list --all

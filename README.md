@@ -72,9 +72,12 @@ gh workflow run probe.yml --repo fitnessroy/fitnessroy-uptime
 - **GitHub's scheduler is best-effort.** `*/5` is an upper bound, not a
   promise; under load runs are commonly several minutes late. This is a safety
   net, not a stopwatch.
-- **Schedules are disabled after 60 days without repository activity.** An
-  outage will wake it up, but if this repo goes quiet for two months, check that
-  the workflow is still enabled.
+- **Schedules are disabled after 60 days without repository activity.** This
+  happened on 2026-11-06. `keepalive.yml` now re-enables the probe through the
+  API on the 1st of every month, which restarts the clock. If GitHub ever
+  emails that the probe was disabled anyway, the keepalive is not doing its
+  job: re-enable with `gh workflow enable probe.yml --repo fitnessroy/fitnessroy-uptime`
+  and look at its runs.
 - **One vantage point.** GitHub's runners land on one region, so a fault
   confined to a colo they do not use is invisible here — the same geometry
   problem documented in the tunnel watchdog. The watchdog's own external leg
